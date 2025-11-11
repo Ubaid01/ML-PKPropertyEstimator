@@ -5,7 +5,7 @@ import joblib
 import matplotlib.pyplot as plt
 
 st.set_page_config(
-    page_title="Pakistan House Price Predictor",
+    page_title="Pakistan Property Price Predictor",
     page_icon="🏠",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -67,6 +67,71 @@ def load_data_and_stats():
         st.error(f"❌ Data files not found: {e}")
         return pd.DataFrame(), None, None, False
 
+def find_similar_properties_by_priority(df, purpose, city, province, property_type, 
+                                        bedrooms, baths, predicted_price, min_results=5):
+    
+    # 1. Exact Match
+    exact_match = df[
+        (df["purpose"] == purpose) &
+        (df["city"] == city) &
+        (df["property_type"] == property_type) &
+        (df["bedrooms"] == bedrooms) &
+        (df["baths"] == baths)
+    ].copy()
+    
+    if len(exact_match) >= min_results:
+        exact_match['match_type'] = 'Exact Match'
+        exact_match['price_diff'] = abs(exact_match['price'] - predicted_price)
+        return exact_match.sort_values('price_diff'), 'Exact Match', len(exact_match)
+    
+    # 2. Relaxed Rooms
+    rooms_relaxed = df[
+        (df["purpose"] == purpose) &
+        (df["city"] == city) &
+        (df["property_type"] == property_type) &
+        ((df["bedrooms"] != bedrooms) | (df["baths"] != baths))
+    ].copy()
+    
+    if len(rooms_relaxed) >= min_results:
+        rooms_relaxed['match_type'] = 'Different Rooms'
+        rooms_relaxed['price_diff'] = abs(rooms_relaxed['price'] - predicted_price)
+        return rooms_relaxed.sort_values('price_diff'), 'Same City & Type', len(rooms_relaxed)
+    
+    # 3. Relaxed Province
+    province_relaxed = df[
+        (df["purpose"] == purpose) &
+        (df["province_name"] == province) &
+        (df["property_type"] == property_type) &
+        (df["city"] != city)
+    ].copy()
+    
+    if len(province_relaxed) >= min_results:
+        province_relaxed['match_type'] = 'Same Province & Type'
+        province_relaxed['price_diff'] = abs(province_relaxed['price'] - predicted_price)
+        return province_relaxed.sort_values('price_diff'), 'Same Province', len(province_relaxed)
+    
+    # 4. Relaxed Type
+    type_relaxed = df[
+        (df["purpose"] == purpose) &
+        (df["city"] == city) &
+        (df["property_type"] != property_type)
+    ].copy()
+    
+    if len(type_relaxed) >= min_results:
+        type_relaxed['match_type'] = 'Same City, Different Type'
+        type_relaxed['price_diff'] = abs(type_relaxed['price'] - predicted_price)
+        return type_relaxed.sort_values('price_diff'), 'Same City', len(type_relaxed)
+    
+    # 5. Last Resort, same purpose only.
+    last_resort = df[df["purpose"] == purpose].copy()
+    
+    if len(last_resort) > 0:
+        last_resort['match_type'] = 'General Search'
+        last_resort['price_diff'] = abs(last_resort['price'] - predicted_price)
+        return last_resort.sort_values('price_diff'), 'Similar Properties', len(last_resort)
+    
+    return pd.DataFrame(), 'No Match', 0
+
 model_sale, model_rent, models_loaded = load_models()
 df, stats_sale, stats_rent, data_loaded = load_data_and_stats()
 
@@ -118,20 +183,34 @@ st.markdown("""
     .stButton>button:hover {
         background-color: #1565C0;
     }
+    .warning-box {
+        background-color: #fff3cd;
+        border-left: 4px solid #ffc107;
+        padding: 1rem;
+        margin: 1rem 0;
+        border-radius: 5px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header">🏠 Pakistan House Price Predictor</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">🏠 Pakistan Property Price Predictor</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Get instant price estimates for properties across major Pakistani cities</div>', unsafe_allow_html=True)
 
 if not models_loaded or not data_loaded:
     st.error("⚠️ Cannot start app: Missing required files (models or data).")
     st.stop()
 
+area_min = int( df['area_sqft'].min() )
+area_max = int( df['area_sqft'].max() )
+bed_max = int( df['bedrooms'].max() )
+bath_max = int( df['baths'].max() )
+year_min = int( df['year_added'].min() )
+year_max = int( df['year_added'].max() )
+
 with st.sidebar:
     st.header("About This App")
     st.markdown("""
-    This app predicts property prices in Pakistan using ML-models trained on real estate data from major cities.
+    This app predicts property prices in Pakistan using ML-models trained on real estate data from major cities using priority-based property real-time matching.
     
     **Cities Covered:**
     - Karachi
@@ -184,7 +263,7 @@ with col1:
     city = st.selectbox(
         "City",
         province_city[province],
-        help="Select the city within the province"
+        help="City will update based on province selection"
     )
 
 with col2:
@@ -194,39 +273,43 @@ with col2:
         prop_types,
         help="Type of property"
     )
-    year_added = st.number_input(
+    year_added = st.slider(
         "Year Listed",
-        min_value=2018,
-        max_value=2019,
-        value=2019,
-        help="How old is the property listed?"
+        min_value=year_min,
+        max_value=year_max,
+        value=year_max,
+        step=1,
+        help=f"Properties listed between {year_min}-{year_max}"
     )
 
 with col3:
     st.subheader("Specifications")
-    area_sqft = st.number_input(
+    # Changed to sliders for checks.
+    area_sqft = st.slider(
         "Area (sqft)",
-        min_value=250,
-        max_value=23900,
+        min_value=area_min,
+        max_value=area_max,
         value=1100,
-        step=100,
-        help="Total area in square feet"
+        step=50,
+        help=f"Valid range: {area_min:,} - {area_max:,} sqft"
     )
-    bedrooms = st.number_input(
+    
+    bedrooms = st.slider(
         "Bedrooms",
         min_value=0,
-        max_value=10,
+        max_value=min( 15 , bed_max ),
         value=1,
         step=1,
-        help="Number of bedrooms"
+        help=f"Number of bedrooms (0-{bed_max})"
     )
-    baths = st.number_input(
+    
+    baths = st.slider(
         "Bathrooms",
         min_value=0,
-        max_value=10,
+        max_value=min( 15 , bath_max ),
         value=1,
         step=1,
-        help="Number of bathrooms"
+        help=f"Number of bathrooms (0-{bath_max})"
     )
 
 st.markdown("<br>", unsafe_allow_html=True)
@@ -252,7 +335,7 @@ if submitted:
                 'year_added': [year_added]
             })
             
-            input_data_fe, _ = add_features(input_data, is_train=False, train_stats=stats)            
+            input_data_fe, _ = add_features(input_data, is_train=False, train_stats=stats)
             input_data_fe = input_data_fe.drop(['year_added'], axis=1, errors='ignore')
             
             try:
@@ -262,14 +345,14 @@ if submitted:
                 pass
             
             prediction_log = model.predict(input_data_fe)
-            predicted_price = np.expm1(prediction_log[0])
+            predicted_price = np.expm1(prediction_log[0])            
             st.markdown(
                 f'<div class="prediction-box">💰 Estimated {purpose} Price:<br>PKR {predicted_price:,.0f}</div>',
                 unsafe_allow_html=True
             )
-            st.balloons()            
+            st.balloons()
             
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3 = st.columns(3)            
             with col1:
                 price_per_sqft = predicted_price / area_sqft
                 st.metric(
@@ -282,70 +365,34 @@ if submitted:
                 area_marla = area_sqft / 272.25
                 st.metric(
                     "Area (Marla)",
-                    f"{area_marla:.1f}",
-                    help="Property area in marlas"
+                    f"{area_marla:.2f}",
+                    help="Property area in marlas (1 Marla = 272.25 sqft)"
                 )
             
             with col3:
                 room_density = (bedrooms + baths) / area_sqft
-                density_label = "Spacious" if room_density < 0.002 else "Compact" if room_density > 0.004 else "Standard"
+                density_label = "Spacious 🏡" if room_density < 0.002 else "Compact 🏢" if room_density > 0.004 else "Standard 🏠"
                 st.metric(
                     "Space Rating",
                     density_label,
-                    help="Based on room density"
+                    help="Based on room-to-area ratio"
                 )
             
             st.divider()
             st.header("🔍 Similar Properties in Market")
             
             with st.spinner("Finding similar properties..."):
-                city_type_match = df[
-                    (df["purpose"] == purpose) &
-                    (df["city"] == city) &
-                    (df["property_type"] == property_type)
-                ].copy()
-
-                # 1: Exact Match
-                exact_match = city_type_match[
-                    (city_type_match["bedrooms"] == bedrooms) &
-                    (city_type_match["baths"] == baths)
-                ].copy()
-                exact_match['match_type'] = 'Exact Match'
+                similar_properties, match_label, total_matches = find_similar_properties_by_priority(
+                    df, purpose, city, province, property_type, 
+                    bedrooms, baths, predicted_price, min_results=5
+                )
                 
-                # 2. City Relaxed
-                province_match = df[
-                    (df["purpose"] == purpose) &
-                    (df["province_name"] == province) &
-                    (df["property_type"] == property_type) &
-                    (df["city"] != city)
-                ].copy()
-                
-                # 3. Type Relaxed
-                city_match = df[
-                    (df["purpose"] == purpose) &
-                    (df["city"] == city) &
-                    (df["property_type"] != property_type)
-                ].copy()
-                
-                # 4. Rooms Relaxed
-                rooms_match = city_type_match[
-                    (city_type_match["bedrooms"] != bedrooms) |
-                    (city_type_match["baths"] != baths)
-                ].copy()
-
-                exact_match['match_type'] = 'Exact Match'
-                province_match['match_type'] = 'Same Province'
-                city_match['match_type'] = 'Same City'
-                rooms_match['match_type'] = 'Diff. Rooms'
-                all_similar = pd.concat( [exact_match, rooms_match, province_match, city_match], ignore_index=True )
-                
-                if not all_similar.empty:
-                    all_similar['price_diff'] = abs(all_similar['price'] - predicted_price)
-                    all_similar['price_diff_pct'] = (all_similar['price_diff'] / predicted_price) * 100
+                if not similar_properties.empty:
+                    similar_top = similar_properties.head(5)                    
+                    similar_top['price_diff_pct'] = (similar_top['price_diff'] / predicted_price) * 100
                     
-                    similar_top = all_similar.sort_values('price_diff').head(5)
-                    st.success(f"✅ Found {len(all_similar):,} similar properties")
-            
+                    st.success(f"✅ Found {total_matches:,} properties using **{match_label}** criteria (showing top 5)")            
+
                     display_df = similar_top[[
                         'match_type', 'price', 'city', 'property_type', 
                         'area_sqft', 'bedrooms', 'baths', 'price_diff_pct'
@@ -354,38 +401,47 @@ if submitted:
                     display_df['area_sqft'] = display_df['area_sqft'].apply(lambda x: f"{x:,.0f} sqft")
                     display_df['price_diff_pct'] = display_df['price_diff_pct'].apply(lambda x: f"{x:.1f}%")
                     display_df = display_df.rename(columns={
-                        'match_type': 'Match Type',
-                        'price': 'Price',
+                        'match_type': 'Match Quality',
+                        'price': 'Listed Price',
                         'city': 'City',
                         'property_type': 'Type',
                         'area_sqft': 'Area',
                         'bedrooms': 'Beds',
                         'baths': 'Baths',
-                        'price_diff_pct': 'Price Difference'
+                        'price_diff_pct': 'Price Diff'
                     })
-                    
+
                     st.dataframe(
                         display_df,
                         hide_index=True,
-                        width='stretch'
+                        use_container_width=True
                     )
-                    st.subheader("⚖️ Price Distribution of Similar Properties")
-                    fig, ax = plt.subplots(figsize=(10, 4))
-                    ax.hist(similar_top['price']/1e6, bins=20, edgecolor='black', alpha=0.7, color='#1E88E5')
-                    ax.axvline(predicted_price/1e6, color='red', linestyle='--', linewidth=2, label='Your Prediction')
+                    
+                    st.subheader("📊 Price Distribution Comparison")                    
+                    fig, ax = plt.subplots(figsize=(10, 5))
+                    prices_millions = similar_top['price'] / 1e6
+                    ax.hist(prices_millions, bins=min(20, len(similar_top)), 
+                            edgecolor='black', alpha=0.7, color='#1E88E5')                    
+                    ax.axvline(predicted_price/1e6, color='red', linestyle='--', 
+                                linewidth=2, label='Your Prediction')                    
                     ax.set_xlabel('Price (Millions PKR)', fontsize=12)
-                    ax.set_ylabel('Count', fontsize=12)
-                    ax.set_title('Price Distribution of Similar Properties', fontsize=14)
-                    ax.legend()
-                    ax.grid(alpha=0.3)
+                    ax.set_ylabel('Number of Properties', fontsize=12)
+                    ax.set_title(f'Price Distribution - {match_label}', fontsize=14, fontweight='bold')
+                    ax.legend(fontsize=11)
+                    ax.grid(alpha=0.3, linestyle='--')                    
+                    median_price = similar_top['price'].median()
+                    mean_price = similar_top['price'].mean()
+                    stats_text = f"Median: PKR {median_price/1e6:.2f}M | Mean: PKR {mean_price/1e6:.2f}M"
+                    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, 
+                            fontsize=10, verticalalignment='top',
+                            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
                     plt.tight_layout()
-                    st.pyplot(fig)        
+                    st.pyplot(fig)
                 else:
-                    st.info("ℹ️ No similar properties found in the dataset.")
+                    st.info("ℹ️ No similar properties found in the dataset. Try adjusting your search criteria.")
             
         except Exception as e:
             st.error(f"❌ Prediction failed: {str(e)}")
-            st.exception(e)
 
 st.divider()
 st.markdown("""
