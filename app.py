@@ -67,7 +67,7 @@ def load_data_and_stats():
         st.error(f"❌ Data files not found: {e}")
         return pd.DataFrame(), None, None, False
 
-def find_similar_properties_by_priority(df, purpose, city, province, property_type, 
+def find_similar_properties_by_priority(df, purpose, city, province, property_type, area_sqft,
                                         bedrooms, baths, predicted_price, min_results=5):
     
     # 1. Exact Match
@@ -75,6 +75,7 @@ def find_similar_properties_by_priority(df, purpose, city, province, property_ty
         (df["purpose"] == purpose) &
         (df["city"] == city) &
         (df["property_type"] == property_type) &
+        ( (df["area_sqft"] >= area_sqft - 180) & (df["area_sqft"] <= area_sqft + 180) ) &
         (df["bedrooms"] == bedrooms) &
         (df["baths"] == baths)
     ].copy()
@@ -89,6 +90,7 @@ def find_similar_properties_by_priority(df, purpose, city, province, property_ty
         (df["purpose"] == purpose) &
         (df["city"] == city) &
         (df["property_type"] == property_type) &
+        ( (df["area_sqft"] >= area_sqft - 270) & (df["area_sqft"] <= area_sqft + 270) ) &
         ((df["bedrooms"] != bedrooms) | (df["baths"] != baths))
     ].copy()
     
@@ -102,6 +104,7 @@ def find_similar_properties_by_priority(df, purpose, city, province, property_ty
         (df["purpose"] == purpose) &
         (df["province_name"] == province) &
         (df["property_type"] == property_type) &
+        ( (df["area_sqft"] >= area_sqft - 450) & (df["area_sqft"] <= area_sqft + 450) ) &
         (df["city"] != city)
     ].copy()
     
@@ -114,6 +117,7 @@ def find_similar_properties_by_priority(df, purpose, city, province, property_ty
     type_relaxed = df[
         (df["purpose"] == purpose) &
         (df["city"] == city) &
+        ( (df["area_sqft"] >= area_sqft - 540) & (df["area_sqft"] <= area_sqft + 540) ) &
         (df["property_type"] != property_type)
     ].copy()
     
@@ -383,7 +387,7 @@ if submitted:
             
             with st.spinner("Finding similar properties..."):
                 similar_properties, match_label, total_matches = find_similar_properties_by_priority(
-                    df, purpose, city, province, property_type, 
+                    df, purpose, city, province, property_type, area_sqft,
                     bedrooms, baths, predicted_price, min_results=5
                 )
                 
@@ -395,7 +399,8 @@ if submitted:
 
                     display_df = similar_top[[
                         'match_type', 'price', 'city', 'property_type', 
-                        'area_sqft', 'bedrooms', 'baths', 'price_diff_pct'
+                        'area_sqft', 'bedrooms', 'baths', 'price_diff_pct',
+                        'page_url'
                     ]].copy()
                     display_df['price'] = display_df['price'].apply(lambda x: f"PKR {x:,.0f}")
                     display_df['area_sqft'] = display_df['area_sqft'].apply(lambda x: f"{x:,.0f} sqft")
@@ -408,13 +413,21 @@ if submitted:
                         'area_sqft': 'Area',
                         'bedrooms': 'Beds',
                         'baths': 'Baths',
-                        'price_diff_pct': 'Price Diff'
+                        'price_diff_pct': 'Price Diff',
+                        'page_url': 'Listing Link'
                     })
 
                     st.dataframe(
                         display_df,
                         hide_index=True,
-                        use_container_width=True
+                        use_container_width=True,
+                        column_config={
+                                "Listing Link": st.column_config.LinkColumn(
+                                    "View Property",
+                                    help="Click to view original listing on zameen.com",
+                                    display_text="View"
+                                )
+                            }
                     )
                     
                     st.subheader("📊 Price Distribution Comparison")                    
